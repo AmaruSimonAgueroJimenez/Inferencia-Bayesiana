@@ -1,0 +1,291 @@
+---
+title: "Regresión Bayesiana"
+output: 
+---
+
+```{r message=FALSE}
+library(car)
+```
+
+```{r}
+data("Leinhardt")
+str(Leinhardt)
+summary(Leinhardt)
+```
+
+Buscaremos modelar la mortalidad infantil en términos de otras variables.
+Como el modelo que haremos no está optimizado, tendremos que sacar los datos faltantes antes de trabajar.
+
+# Análisis descriptivos
+```{r}
+pairs(Leinhardt)
+```
+
+Vemos que entre ingresos e infancia no hay una relación de tipo lineal por lo que hay que aplicar una transformación para poder hacerlo. 
+
+```{r}
+plot(infant ~ income, data = Leinhardt)
+hist(Leinhardt$infant)
+hist(Leinhardt$income)
+```
+
+Pasamos las variables a escala logarítmica:
+```{r}
+Leinhardt$loginfant <- log(Leinhardt$infant)
+Leinhardt$logincome <- log(Leinhardt$income)
+```
+
+```{r}
+plot(loginfant ~ logincome, data=Leinhardt)
+```
+
+# Modelo 0: Regresión normal
+
+```{r}
+lmod <- lm(loginfant ~ logincome, data  =Leinhardt)
+summary(lmod)
+```
+
+# Eliminamos datos faltantes
+```{r}
+dat <- na.omit(Leinhardt)
+```
+
+# Modelo 1: Regresión bayesiana
+```{r message=FALSE}
+library(rjags)
+set.seed(123)
+```
+
+```{r}
+mod1_string <- "model{
+
+  for(i in 1:n){
+    y[i] ~ dnorm(mu[i], prec)
+    mu[i] = b[1] + b[2]*log_income[i]
+  }
+
+  for(j in 1:2){
+    b[j] ~ dnorm(0.0, 1.0/1.0e6)
+  }
+
+  prec ~ dgamma(2.5, 25.0)
+  sig2 = 1.0 /prec
+  sig = sqrt(sig2)
+
+}"
+```
+
+```{r}
+data1_jags <- list(y = dat$loginfant,
+                   n = nrow(dat),
+                   log_income = dat$logincome)
+
+params1 <- c("b", "sig")
+```
+
+```{r}
+inits1 <- function(){
+  inits = list("b" = rnorm(2, 0.0, 100.0), #simulo 2 normales, por b1 y b2
+               "prec" = rgamma(1, 1.0, 1.0)) 
+}
+```
+
+```{r}
+mod1 <- jags.model(textConnection(mod1_string), 
+                   data = data1_jags,
+                   inits = inits1,
+                   n.chains = 3) #la idea es usar de 3 cadenas para arriba
+
+update(mod1, 1000)
+```
+
+```{r}
+mod1_sim <- coda.samples(model = mod1,
+                         variable.names = params1,
+                         n.iter = 5e3)
+mod1_csim <- do.call(rbind, mod1_sim)
+```
+
+##Convergencia
+```{r}
+library(coda)
+```
+
+```{r}
+plot(mod1_sim)
+```
+las cadenas se ven con muy buen mixing, recorren bien el espacio de parámetros
+las distribuciones originalmente eran centradas en 0 y ahora están desplazadas a otros valores
+```{r}
+gelman.diag(mod1_sim)
+```
+No hay evidencia de que el modelo no converja
+```{r}
+autocorr(mod1_sim)
+effectiveSize(mod1_sim)
+```
+tengo mucho menos información que lo que simulé
+hay mucha dependencia entre los datos
+si hubiésemos simulado una cadena muy larga, valdría la pena quitar valores
+
+##Resultados y residuos
+```{r}
+summary(mod1_sim)
+summary(lmod)
+intervalo.hpd <- HPDinterval(as.mcmc(mod1_csim), prob = .95)
+intervalo.hpd
+```
+
+Analicemos residuos que sé que van a funcionar mal, como los del modelo sin haber usado la regresión logarítmica
+```{r}
+lmod0 = lm(infant ~ income, data = Leinhardt)
+plot(resid(lmod0))
+```
+Esto sirve para ver:
+- si son demasiado grandes (acá está muy grande)
+- la independencia entre los residuos
+Son malos
+
+Otra forma de verlo:
+```{r}
+plot(predict(lmod0), resid(lmod0))
+qqnorm(resid(lmod0)); qqline(resid(lmod0))
+library(nortest)
+lillie.test(resid(lmod0))
+```
+Cuando quiero hacer los residuos bayesianos, uso los estimadores de Bayes
+```{r}
+X <- cbind(rep(1, data1_jags$n,), data1_jags$log_income)
+pm_params1 <- colMeans(mod1_csim)
+yhat1 <- drop(X %*% pm_params1[1:2]) #esta es la predicción
+resid1 <- data1_jags$y - yhat1 #residuos: datos - predicción
+plot(resid1)
+```
+Los errores que da están bastante mejor, aunque igual tiene unos valores grandes.
+
+```{r}
+plot(yhat1, resid1)
+qqnorm(resid1); qqline(resid1)
+lillie.test(resid1)
+```
+
+```{r}
+head(rownames(dat)[order(resid1, decreasing = T)])
+```
+
+"Saudi.Arabia" y "Libya" exportan petróleo, introduciremos la covariable "oil" en el análisis para ver si es efecto de eso
+
+#Modelo 2
+
+```{r}
+mod2_string <- "model{
+  for(i in 1:n){
+    y[i] ~ dnorm(mu[i], prec)
+    mu[i] = b[1] + b[2]*log_income[i] + b[3]*is_oil[i]
+  }
+  for(j in 1:3){
+    b[j] ~ dnorm(0.0, 1.0/1.0e6)
+  }
+  prec ~ dgamma(2.5, 25.0)
+  sig2 = 1.0 /prec
+  sig = sqrt(sig2)
+}"
+```
+
+```{r}
+data2_jags <- list(y = dat$loginfant,
+                   n = nrow(dat),
+                   log_income = dat$logincome,
+                   is_oil = as.numeric(dat$oil=="yes"))
+
+params2 <- c("b", "sig")
+```
+
+```{r}
+inits2 <- function(){
+  inits = list("b" = rnorm(3, 0.0, 100.0), #simulo 3 normales, por b1, b2 y b3
+               "prec" = rgamma(1, 1.0, 1.0)) 
+}
+```
+
+```{r}
+mod2 <- jags.model(textConnection(mod2_string), 
+                   data = data2_jags,
+                   inits = inits2,
+                   n.chains = 3) #la idea es usar de 3 cadenas para arriba
+
+update(mod2, 1000)
+```
+
+```{r}
+mod2_sim <- coda.samples(model = mod2,
+                         variable.names = params2,
+                         n.iter = 5e3)
+mod2_csim <- do.call(rbind, mod2_sim)
+```
+
+##Convergencia
+```{r}
+plot(mod2_sim)
+gelman.diag(mod2_sim)
+autocorr(mod2_sim)
+effectiveSize(mod2_sim)
+```
+
+##Resultados y residuos
+```{r}
+summary(mod2_sim)
+intervalo.hpd <- HPDinterval(as.mcmc(mod2_csim), prob = .95)
+intervalo.hpd
+```
+
+```{r}
+X2 <- cbind(rep(1, data2_jags$n,), data2_jags$log_income, data2_jags$is_oil)
+pm_params2 <- colMeans(mod2_csim) #parámetros a posteriori
+yhat2 <- drop(X2 %*% pm_params2[1:3]) #esta es la predicción
+resid2 <- data2_jags$y - yhat2 #residuos: datos - predicción
+plot(resid2)
+plot(yhat2, resid2)
+qqnorm(resid2); qqline(resid2)
+lillie.test(resid2)
+```
+
+```{r}
+par(mfrow = c(2,1))
+plot(yhat2, resid2)
+plot(yhat1, resid1)
+```
+
+Logré bajar los residuos de los outliers
+
+
+#Modelo 3
+
+```{r}
+par(mfrow = c(1,1))
+curve(dnorm(x), from = -5, to = 5)
+curve(dt(x,1), from = -5, to = 5, col="red", add=T))
+```
+Una t tiene colas mucho más pesadas que la normal
+¿Cómo ajusto una normal a través de una t, para poder controlar la varianza?
+Quiero que los errores tengan colas más grandes, no los coeficientes, así que de ellos puedo mantener la normalidad
+```{r}
+mod3_string <- "model{
+  for(i in 1:n){
+    y[i] ~ dt(mu[i], tau, df)
+    mu[i] = b[1] + b[2]*log_income[i] + b[3]*is_oil[i]
+  }
+  for(j in 1:3){
+    b[j] ~ dnorm(0.0, 1.0/1.0e6)
+  }
+  df = 2.0 + nu
+  nu ~ dexp(1.0)
+  tau ~ dgamma(2.5, 25.0)
+  sig = sqrt(1.0 / tau * df / (df - 2.0))
+}"
+```
+
+
+SEGUIR COMPLETANDO DESDE ACÁ COMO ANTES
+hay que actualizar nu simulando una exponencial

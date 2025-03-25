@@ -1,0 +1,96 @@
+---
+title: "Regresión de Poisson Bayesiana"
+output: 
+---
+
+# Datos
+
+```{r}
+# Variable respuesta: counts
+y <- c(18,17,15,20,10,20,25,13,12)
+# Variable predictora: outcome
+x1 <- gl(3,1,9)
+# Variable predictora: treatment
+x2 <- gl(3,3)
+# Crear una tabla de datos
+print(datos <- data.frame(y, x1, x2))
+```
+
+```{r}
+# Ajuste del modelo lineal generalizado
+ajuste <- glm(y ~ x1 + x2, family = poisson())
+# Resumen del ajuste
+summary(ajuste)
+```
+
+# ESPECIFICACIÓN DEL MODELO EN JAGS ####
+
+```{r}
+modelo_texto <- "model{
+  # Modelo probabilístico
+  for (i in 1:length(y)) {
+    y[i] ~ dpois(lambda[i])
+    log(lambda[i]) = b0 + b1[x1[i]] + b2[x2[i]]
+  }
+
+# Distribuciones a priori 'poco informativa'
+  b0 ~ dnorm(0.0, 1.0/1.0e6)
+  b1[1] <- 0
+  b2[1] <- 0
+  for (i in 2:3) {
+    b1[i] ~ dnorm(0.0, 1.0/1.0e4)
+    b2[i] ~ dnorm(0.0, 1.0/1.0e4)
+  }
+}"
+```
+
+# EJECUCIÓN DEL MÉTODO MCMC ####
+
+## Preparativos
+```{r}
+datos_jags <- as.list(datos)
+
+parametros <- c("b0", "b1", "b2")
+
+modelo_jags <- jags.model(
+  file = textConnection(modelo_texto),
+  data = datos_jags,
+  n.chains = 3)
+```
+
+## Correr la cadena
+```{r}
+update(object = modelo_jags, n.iter = 1e3)
+```
+
+## Obtener los resultados
+```{r}
+modelo_coda <- coda.samples(
+  model = modelo_jags,
+  variable.names = parametros,
+  n.iter = 5e3)
+
+modelo_mcmc <- as.mcmc(do.call(rbind, modelo_coda))
+```
+
+# Evaluar el modelo
+
+```{r}
+plot(modelo_mcmc)
+```
+
+```{r}
+gelman.diag(modelo_coda[, c(1,3,4,6,7)])
+```
+No hay evidencia de que el modelo no converja
+```{r}
+autocorr(modelo_coda)
+effectiveSize(modelo_coda)
+```
+
+## Resultados
+```{r}
+summary(modelo_coda)
+intervalo.hpd <- HPDinterval(as.mcmc(modelo_mcmc), prob = .95)
+intervalo.hpd
+```

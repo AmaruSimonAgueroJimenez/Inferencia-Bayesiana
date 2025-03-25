@@ -1,0 +1,140 @@
+---
+title: "Modelo Jerárquico Bayesiano"
+output: 
+---
+
+La independencia de los datos no es tal, podrían haber clusters de individuos según alguna característica en común.
+
+Tengo datos de conteo. En un modelo de Poisson no considero el lugar de origen de los conteos:
+
+y[i]|lambda ~ Pois(lambda), i = 1,...,n
+
+Con esto asumo que lo que pasa en cada lugar es lo mismo. En un modelo jerárquico no hago esta suposición sino que evalúo las diferencias por lugar
+
+
+#Datos
+```{r}
+dat <- read.delim("cookies.txt", header = T, sep = "\ ", dec = ",")
+```
+
+#Análisis descriptivo
+```{r}
+table(dat$location)
+boxplot(chips ~ location, data = dat)
+```
+
+#Modelo Bayesiano
+```{r}
+library(rjags)
+set.seed(123)
+```
+
+```{r}
+mod_string <- "model{
+  for(i in 1:length(chips)){
+    chips[i] ~ dpois(lam[location[i]])
+  }
+
+  for(j in 1:max(location)){
+    lam[j] ~ dgamma(alpha, beta)
+  }
+
+  alpha = mu^2 / sig^2
+  beta = mu /sig^2
+  mu ~ dgamma(2.0, 1.0/5.0)
+  sig ~ dexp(1.0)
+}"
+```
+
+```{r}
+data_jags <- as.list(dat)
+params <- c("lam", "mu", "sig")
+```
+
+```{r}
+mod <- jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+update(mod, 1e3)
+
+mod_sim <- coda.samples(model = mod, variable.names = params, n.iter = 5e3)
+mod_csim <- as.mcmc(do.call(rbind, mod_sim))
+```
+
+##Diagnóstico convergencia
+```{r}
+plot(mod_sim)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+effectiveSize(mod_sim)
+```
+
+##Residuos
+
+¿Qué son los residuos?
+Hay a nivel de la observación y también de la localización, así que hay que calcularlos para cada uno de ellos.  
+
+```{r}
+pm_params <- colMeans(mod_csim) #parámetros a posteriori
+```
+
+###Residuos a nivel de la observación SE ENCUENTRNA AGRUPADOS POR LOS 5 LAMBDAS DISTINTOS
+```{r}
+yhat <- rep(pm_params[1:5], each = 30)
+resid <- dat$chips - yhat
+
+plot(jitter(yhat, resid))
+var(resid[yhat < 7]); var(resid[yhat > 11])
+```
+
+###Residuos a nivel de localización
+```{r}
+lam_resid <- pm_params[1:5] - pm_params["mu"]
+plot(lam_resid)
+abline(h=0, lty=2)
+```
+
+##Resultados
+```{r}
+summary(mod_sim)
+```
+Mu como media global y sigma como serviación estandar de las medias de las diferentes localizaciones. Todo esto se podría hacer en el enfoque clásico, así que vamos a lo bayesiano, la distribución predictiva.
+
+## Distribución predictiva
+
+### ¿qué pasaría con una nueva localización? simulo los parámetros (lambdas) en base a lo que simulé
+```{r}
+n_sim <- nrow(mod_csim)
+lam_pred <- rgamma(n = n_sim, shape = mod_csim[,"mu"]^2/ mod_csim[,"sig"]^2, rate = mod_csim[,"mu"]/ mod_csim[,"sig"]^2)
+
+hist(lam_pred)
+```
+
+¿Cuál es la probabilidad de que una nueva localización tenga un lambda más grande que 15?
+```{r}
+mean(lam_pred > 15)
+```
+
+Ahora haremos una predicción en términos de un lambda para una nueva localización
+```{r}
+y_pred <- rpois(n = n_sim, lambda = lam_pred)
+```
+
+Prob de que la variable de conteo sea mayor que 15:
+```{r}
+mean(y_pred > 15)
+```
+
+
+### ¿Qué pasa con una localización conocida?
+
+¿Cuál sería la distribución para nuevas observaciones de localizaciones que ya existen?
+La diferencia es que ya no uso los lamda predichos sino los ya simulados
+```{r}
+y_pred1 = rpois(n = n_sim, lambda = mod_csim[,"lam[1]"])
+hist(y_pred)
+```
+
+¿Cuál es la prob de que lo producido en la localización 1 sea menor que 7?
+```{r}
+mean(y_pred1 < 7)
+```
+

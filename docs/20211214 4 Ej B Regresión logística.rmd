@@ -1,0 +1,98 @@
+---
+title: "Regresión binomial bayesiana"
+output: 
+---
+
+
+# Datos
+
+```{r}
+# Variable respuesta: counts
+y <- c(1, 4, 9, 13, 18, 20, 0, 2, 6, 10, 12, 16)
+# Variable predictora: ldose
+x1 <- rep(0:5, 2)
+# Variable predictora: sex
+x2 <- factor(rep(c("M", "F"), c(6, 6)))
+# Crear un vector de pares de datos como respuesta
+print(Y <- cbind(numdead = y, numalive = 20 - y))
+```
+
+
+```{r}
+# Ajuste del modelo lineal generalizado
+ajuste <- glm(Y ~ x1*x2, family = binomial)
+# Tabla de ANOVA
+anova(ajuste)
+# Resumen del ajuste
+summary(ajuste)
+```
+
+# ESPECIFICACIÓN DEL MODELO EN JAGS ####
+```{r}
+modelo_texto <- "model{
+
+# Modelo probabilístico
+  for (i in 1:length(y)) {
+    y[i] ~ dbin(pi[i], 20)
+    logit(pi[i]) = b0 + b1*x1[i] + b2*x2[i] + b3*x1[i]*x2[i]
+  }
+
+# Distribuciones a priori 'poco informativa'
+  b0 ~ dnorm(0.0, 1.0/1.0e6)
+  b1 ~ dnorm(0.0, 1.0/1.0e4)
+  b2 ~ dnorm(0.0, 1.0/1.0e4)
+  b3 ~ dnorm(0.0, 1.0/1.0e4)
+}"
+```
+
+# EJECUCIÓN DEL MÉTODO MCMC ####
+
+## Preparativos
+```{r}
+datos_jags <- list(y = y, x1 = x1,
+                   x2 = ifelse(test = x2 == "M", yes = 1, no = 0))
+
+parametros <- c("b0", "b1", "b2", "b3")
+
+modelo_jags <- jags.model(
+  file = textConnection(modelo_texto),
+  data = datos_jags,
+  n.chains = 3)
+```
+
+## Burn-in
+```{r}
+update(object = modelo_jags, n.iter = 1e3)
+```
+
+## Generar las cadenas
+```{r}
+modelo_coda <- coda.samples(
+  model = modelo_jags,
+  variable.names = parametros,
+  n.iter = 5e3)
+
+modelo_mcmc <- as.mcmc(do.call(rbind, modelo_coda))
+```
+
+# Evaluar el modelo
+
+```{r}
+plot(modelo_mcmc)
+```
+
+```{r}
+gelman.diag(modelo_coda)
+```
+No hay evidencia de que el modelo no converja
+```{r}
+autocorr(modelo_coda)
+effectiveSize(modelo_coda)
+```
+
+## Resultados
+```{r}
+summary(modelo_coda)
+intervalo.hpd <- HPDinterval(as.mcmc(modelo_mcmc), prob = .95)
+intervalo.hpd
+```

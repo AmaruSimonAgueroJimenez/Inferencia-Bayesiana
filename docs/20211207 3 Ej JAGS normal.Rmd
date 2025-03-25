@@ -1,0 +1,80 @@
+---
+title: "Ejemplo con JAGS"
+output: 
+---
+
+Modelo bayesiano
+
+yi|mu ~ N(mu,1), i=1,..,n
+mu ~ t(0,1,1)
+
+Usamos JAGS desde R con el paquete rjags
+```{r}
+library(rjags)
+```
+
+#1. Especificar el modelo  
+El modelo primero tiene la verosimilitud y luego la a priri
+```{r}
+mod_string <- "model{
+  for(i in 1:n){
+      y[i] ~ dnorm(mu, 1.0/sig2)
+  }
+  mu ~ dt(0.0, 1.0, 1.0)
+  sig2 = 1.0
+}"
+```
+
+#2. Configurar el modelo  
+```{r}
+set.seed(50)
+y <- c(1.2, 1.4, -.5, .3, .9, 2.3, 1.0, .1, 1.3, 1.9)
+n <- length(y)
+
+data_jags <- list(y=y, n=n)
+params <- c("mu")
+inits <- function(){
+  inits <- list("mu" = 0.0)
+  #inits <- list("mu" = rnorm(1, 0.0, 1.0)) Puedo tener una inicialización determinista o aleatoria
+}
+mod <- jags.model(textConnection(mod_string), data=data_jags, inits=inits, n.chain=3) #con n.chain indico cuántas cadenas genero
+```
+
+#3. Correr el modelo  
+```{r}
+update(mod, 500)
+
+mod_sim <- coda.samples(model = mod, variable.names = params, n.iter = 1000)
+
+mod_csim <- do.call(rbind, mod_sim) #para juntar las 3 cadenas
+```
+
+#4. Post procesamiento
+```{r}
+library(coda)
+plot(mod_sim) #grafica 3 cadenas separadas
+plot(as.mcmc(mod_csim)) #grafica sólo 1 cadena larga
+
+summary(mod_sim)
+```
+
+Analizamos la autocorrelación para evaluar la dependencia  
+```{r}
+autocorr.plot(mod_sim)
+autocorr.diag(mod_sim)
+```
+
+También analizamos el tamaño efectivo para analizar la dependencia  
+```{r}
+effectiveSize(mod_sim)
+```
+
+Verificamos a convergencia a través del test de gelman, que entrega evidencia cuando el modelo no converge  
+```{r}
+gelman.diag(mod_sim)
+gelman.plot(mod_sim) #grafica mediana y cuantil, importa que converjan
+
+```
+
+
+

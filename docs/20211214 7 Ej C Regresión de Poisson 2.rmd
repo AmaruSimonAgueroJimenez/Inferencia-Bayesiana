@@ -1,0 +1,149 @@
+---
+title: "Regresión de Poisson"
+output: 
+---
+
+#Datos
+```{r}
+library(COUNT)
+data("badhealth")
+head(badhealth)
+summary(badhealth)
+any(is.na(badhealth))
+```
+
+#Análisis descriptivo
+```{r}
+hist(badhealth$numvisit, breaks = 20)
+sum(badhealth$numvisit == 0) #cuantos ceros hay
+```
+
+```{r}
+plot(jitter(log(numvisit)) ~ jitter(age), data = badhealth, subset = badh == 0 & numvisit > 0, xlab = "age", ylab = "log(visits") #uso jitter para generar ruido y ver mejor los datos
+points(jitter(log(numvisit)) ~ jitter(age), data = badhealth, subset = badh == 1 & numvisit > 0, col = "red") 
+```
+Puedo pensar en una interacción entre la edad y el número de visitas, en el modelo lo agregaré de esa manera.  
+
+#Modelo bayesiano
+
+```{r}
+library(rjags)
+```
+
+```{r}
+mod_string <- "model{
+
+  for(i in 1: length(numvisit)){
+    numvisit[i] ~ dpois(lam[i])
+    log(lam[i]) = int + b_badh*badh[i] + b_age*age[i] + b_intx*age[i]*badh[i]
+  }
+
+  int ~ dnorm(0.0, 1.0/1.0e6)
+  b_badh ~ dnorm(0.0, 1.0/1.0e4)
+  b_age ~ dnorm(0.0, 1.0/1.0e4)
+  b_intx ~ dnorm(0.0, 1.0/1.0e4)
+
+}"
+
+#hay que poner la función de enlace, igual que en regresión logística
+```
+
+```{r}
+set.seed(123)
+data_jags <- as.list(badhealth)
+params <- c("int", "b_badh", "b_age", "b_intx")
+mod <- jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+```
+
+```{r}
+set.seed(123)
+
+update(mod,1e3)
+
+mod_sim <- coda.samples(model = mod, variable.names = params, n.iter = 5e3)
+mod_csim <- as.mcmc(do.call(rbind, mod_sim))
+```
+
+##Diagnóstico de convergencia
+```{r fig.height=10, fig.width=8}
+plot(mod_sim)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+effectiveSize(mod_sim)
+
+dic <- dic.samples(mod, n.iter = 1e3)
+```
+
+##Residuos
+```{r}
+X <- as.matrix(badhealth[,-1])
+X <- cbind(X, with(badhealth, badh*age))
+tail(X)
+
+pmed_coef <- apply(mod_csim, 2, median)
+head(pmed_coef) #necesito ver en que orden quedaron los nombres porque voy a tener q multiplicar la matriz
+
+llam_hat <- pmed_coef["int"] + X %*% pmed_coef[c("b_badh", "b_age", "b_intx")] 
+#logaritmo de lambda gorro, mi modelo no es esto sino su exponencial
+
+lam_hat <- exp(llam_hat) #predicción de la media de mi modelo
+
+resid <- badhealth$numvisit - lam_hat
+
+plot(resid) #los residuos se ven complicados pero cuando le pido este gráfico como que me los ordena, entonces no pesco este gráfico, no es útil
+
+#pero ahora haremos algo que sí nos interesa: voy a graficar el lamda estimado vs los residuos 
+
+plot(lam_hat[which(badhealth$badh == 0)], resid[which(badhealth$badh == 0)], xlim = c(0,8), ylab = "residuos", xlab = expression(hat(lambda)), ylim = range(resid))
+points(lam_hat[which(badhealth$badh == 1)], resid[which(badhealth$badh == 1)], col = "red")
+```
+En este gráfico vemos que el modelo separa el número previsto de visitas de acuerdo a si eres o no una persona con mala salud. Para un modelo de poisson la media es igual a la varianza, por eso cuando aumenta la media aumenta la dispersión. De todos modos, el modelo no es muy bueno porque tiene residuos muy grandes, es decir, el número de visitas tiene una variabilidad mucho más grande que la que el modelo es capaz de predecir. 
+
+Ahora voy a calcular la variabilidad por cada uno de los grupos, que me debería dar 2 y 6:
+```{r}
+var(resid[which(badhealth$badh == 0)]); var(resid[which(badhealth$badh == 1)])
+```
+Deberían dar 2 y 6 y da 7 y 41, por lo que el modelo no explica la varibilidad que hay, una sobredispersión. Es normal en los modelos de conteo la sobre dispersión, y podríamos usar una binomial negativa.
+
+Supuesto: asumiendo que el modelo ajusta bien -> trabajaremos como si el modelo estuviera bueno.
+
+##Resultados
+```{r}
+summary(mod_csim)
+```
+En este modelo, ¿el intercepto es interpretrable? Correspondería a una persona con 0 años y la edad mínima es 20, así que no es interpretable, aunque aporte al modelo.
+
+¿Qué podemos decir del parámetro asociado a los individuos sanos? ¿Cómo podemos interpretar la edad de los individuos sanos? hay una asociación positiva con la variable edad para los individuos sanos. La variable badh se asocia al numero de visitas. 
+
+Más que el número me importa interpretar el signo, porque eso me altera la interpretación. Lo otro puede cambiar fácilmente según las a priori. Al evaluar varias a priori, se debe reportar si hay sensibilidad a la elección de la a priori, es decir, si dependiendo de la apriori que elija me cambia el signo.
+
+La interacción intx es un ajuste de la edad para los que tienen mala salud. 
+
+##Distribución predictiva
+
+¿Cuál es la prob de que una persona con mala salud tenga más visitas?
+
+El problema de reemplazar el parámetro por un estimador en el enfoque clásico es que le quito la variabilidad; en tanto, en el enfoque bayesiano hago varias simulaciones del parámetro a partir de la a posteriori, y de esa forma le incorporo la variabilidad simulada a este estimador que uso para reemplazar al parámetro, lo que no podría hacer con enfoque clásico.
+
+```{r}
+#para una persona de 35 años de edad
+#estado de salud, edad, intx:
+x1 <- c(0, 35, 0) #buena salud
+x2 <- c(1, 35, 35) #mala salud
+
+loglam1 <- mod_csim[,"int"] + mod_csim[,c(2,1,3)] %*% x1 
+loglam2 <- mod_csim[,"int"] + mod_csim[,c(2,1,3)] %*% x2 
+
+lam1 <- exp(loglam1)
+lam2 <- exp(loglam2)
+
+n_sim <- length(lam1)
+y1 <- rpois(n = n_sim, lambda = lam1)
+y2 <- rpois(n = n_sim, lambda = lam2)
+
+plot(table(factor(y1, levels = 0:18))/n_sim, pch = 2, ylab = "prob a posteriori", xlab = "visitas")
+points(table(y2 + 0.1)/n_sim, pch = 2, col = "red") #como las variables se me van a solapar un poquito, voy a correr un poquito a la derecha las rojas, sólo para poder visualizarlas
+
+mean(y2 > y1)#probabilidad de que una persona con mala salud tenga más visitas al médico
+```
+

@@ -1,0 +1,100 @@
+---
+title: "Ejemplo uso JAGS"
+output: 
+---
+
+
+```{r}
+library(rjags)
+library(coda)
+```
+
+# Datos previos
+
+## Valores de los hiperparámetros (info a priori)
+```{r}
+a <- 4.5
+b <- 25.5
+```
+
+## Datos observados en la muestra
+```{r}
+x <- c(rep(1, 72), rep(0, 400-72))
+```
+
+## Guardar estos datos en una lista nombrada
+```{r}
+datos_jags <- list(x = x, a = a, b = b)
+```
+
+# Especificar el modelo
+
+```{r}
+modelo_texto <- "model{
+
+  # Modelo probabilístico
+  for (i in 1:length(x)) {
+    x[i] ~ dbern(pi)
+  }
+
+  # Distribución a priori
+  pi ~ dbeta(a, b)
+
+  # Cantidad de interés
+  odds <- pi/(1-pi)
+
+}"
+```
+
+
+# Inicializar la cadena
+```{r}
+# Punto de partida aleatorio
+ini_A <- runif(1, 0.01, 0.99)
+
+# Punto de partida en base a la distr. a priori
+ini_B <- rbeta(1, 4.5, 25.5)
+
+# Punto de partida en base al EMV
+ini_C <- mean(x)
+
+# Punto de partida aleatorio, pero informado
+ini_D <- min(max(0.01, rnorm(1, mean(x), sd(x)), 0.99))
+
+# Punto de partida en base al EMV en una remuestra
+ini_E <- mean(sample(x, replace = TRUE))
+
+# Combinar todos estos puntos en una lista de listas
+inits_list <- list(list(pi = ini_A),
+                   list(pi = ini_B),
+                   list(pi = ini_C),
+                   list(pi = ini_D),
+                   list(pi = ini_E))
+```
+
+
+# Generar la cadena
+
+## Paso 1: comunicar toda la información a JAGS
+```{r}
+modelo_jags <- jags.model(
+  file = textConnection(modelo_texto),
+  data = datos_jags,
+  inits = inits_list,
+  n.chains = 5)
+```
+
+## Paso 2: correr la fase de "burn-in" de las cadenas
+```{r}
+update(object = modelo_jags, n.iter = 1e3)
+```
+
+## Paso 3: correr y registrar el resto de las cadenas
+```{r}
+modelo_sims <- coda.samples(
+  model = modelo_jags,
+  variable.names = c("pi", "odds"),
+  n.iter = 5e3)
+modelo_mcmc <- as.mcmc(do.call(rbind, modelo_sims))
+```
+

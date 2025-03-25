@@ -1,0 +1,209 @@
+---
+title: "Regresión Logística Bayesiana"
+output: 
+---
+
+# Data
+```{r}
+library(boot)
+data("urine")
+?urine
+str(urine)
+head(urine)
+summary(urine)
+
+dat = na.omit(urine) #habría que hacer algo especial para tratar con datos faltantes, así que por ahora los eliminamos; podríamos, por ejemplo, imputar los datos para no perder la variable completa
+```
+
+# Análisis descriptivo
+
+Las correlaciones pueden ser problematicas ya que algunas de ellas compiten para poder predecir, en terminos bayesianos el efecto de una variable va a empeorar la convergencia. Es importante ver la correlación de las variables que estamos trabajando, porque si están muy correlacionadas, hay que generar cadenas más largas (por ejemplo, pasar de 1.000 a 1.000.000 de cadenas).
+
+```{r}
+pairs(dat)
+library(corrplot)
+Cor = cor(dat)
+corrplot(Cor, type = "upper", method = "ellipse", tl.pos = "d")
+corrplot(Cor, type = "lower", method = "number", col = "black", add = TRUE, diag = FALSE, tl.pos = "n", cl.pos = "n")
+```
+Si tengo covariables que sé que estarán bien correlacionadas, ¿qué puedo hacer desde un punto de vista bayesiano con la colinealidad? Hacer selección de variables, con una a priori que priorice estar cercano al cero.
+
+Hay dos formas de abordar la selección de variables:
+
+1. Seleccionar distintas configuraciones o modelos con distintas especificaciones (en términos de la presencia o ausencia de una variable) y usar el modelo con menor BIC.
+2. Seleccionar distribuciones a priori que hagan la selección de variables por nosotros (a priori de Laplace).
+
+Actualmente la segunda aproximación es la más utilizada. 
+
+En este caso usaremos la segunda aproximación:
+
+
+#A priori de Laplace (Selección de Variables)
+```{r}
+ddexp <- function(x, mu, tau){
+  0.5 * tau * exp(-tau * abs(x-mu))
+}
+
+curve(ddexp(x, mu = 0.0, tau = 1.0), from = -5.0, to = 5.0, ylab = "density", main = "Double exponential\ndistribution")
+curve(dnorm(x, mean = 0.0, sd = 1.0), from = -5.0, to = 5.0, lty = 2, add = TRUE)
+legend("topright", legend = c("double exponential", "normal"), lty = c(1,2), bty = "n")
+```
+
+
+# Estandarizar variables
+
+Ahora vamos a especificar el modelo. Hay un problema con los datos. Hay variables que pueden tener números más grandes y por tanto tenener variabilidades que comparativamente se pueden ver mayores.
+
+```{r}
+X = scale(dat[,-1], center = T, scale = T)
+head(X)
+head(X[,"gravity"])
+colMeans(X)
+apply(X, 2, sd)
+```
+
+#Modelo Bayesiano
+```{r}
+library(rjags)
+library(coda)
+set.seed(1234)
+```
+
+##Modelo 1
+
+La diferencia con el modelo de regresion lineal va a estar en antes vimos a priori con media mu, es decir, a priori normal y datos normales. Como los GLM tiene una funcion de enlace, entonces ahora voy a generar una función de enlace y luego continuaré con los datos igual a la regresión lineal.
+
+```{r}
+mod1_string <- "model{
+
+for(i in 1:length(y)){
+  y[i] ~ dbern(p[i])
+  logit(p[i]) = int + b[1]*gravity[i] + b[2]*ph[i] + b[3]*osmo[i] + b[4]*cond[i] + b[5]*urea[i] + b[6]*calc[i]
+  }
+
+  int ~ dnorm(0.0, 1.0/25.0)
+  for(j in 1:6){
+    b[j] ~ ddexp(0.0, sqrt(2.0))
+  }
+}"
+```
+No tiene sentido usar una a priori de Laplace para el intercepto, usamos una Normal
+
+```{r}
+head(X)
+
+data_jags <- list(y = dat$r, 
+                  gravity = X[,"gravity"], ph = X[,"ph"], osmo = X[,"osmo"], 
+                  cond = X[,"cond"], urea = X[,"urea"], calc = X[,"calc"])
+
+params <- c("int", "b")
+
+set.seed(1234)
+
+mod1 <- jags.model(textConnection(mod1_string), data = data_jags, n.chains = 3)
+
+update(mod1, 1e3)
+
+mod1_sim <- coda.samples(model = mod1, variable.names = params, n.iter = 5e3)
+
+mod1_csim <- as.mcmc(do.call(rbind, mod1_sim))
+```
+
+###Diagnósticos de Convergencia
+```{r}
+plot(mod1_sim)
+gelman.diag(mod1_sim)
+autocorr.diag(mod1_sim)
+effectiveSize(mod1_sim)
+
+dic1 <- dic.samples(mod1, n.iter = 1e3)
+```
+- Todas las variables tienen un buen mixing. A pesar de estar centradas en 0 hay variables que no están centradas en cero en la simulación. Podrían ser significativas en el modelo. 
+- Valores de Gelman cercanos 1 por lo que no hay evidencia de que no hayan convergido
+- Eficiencia: no es muy efectivo, hay mucha memoria
+- Tamaño efectivo: si fuera eficiente debería ser de 15 mil y está muy bajo eso; los más eficientes son los que parecían ser significativos
+
+###Resultados
+```{r}
+summary(mod1_sim)
+```
+¿Con quién nos quedamos, de acuerdo a estos resultados?
+En los intervalos que no contienen al 0, porque son significativamente distintos de cero.
+b1 y b6 son significativas
+b4 y b5 es un caso límite, contiene al 0 pero a penas, en estricto rigor no es significativa pero hay que tener cuidado. Vemos las correlaciones nuevamente y concluimos que b5 estaba muy correlacionada con otras variables, entonces la podemos descartar; no es el caso de b4 así que la mantenemos
+
+```{r}
+par(mfrow = c(3,2))
+densplot(mod1_csim[, 1:6], xlim = c(-3, 3))
+```
+
+##Modelo 2
+
+Como el modelo lo estamos mirando nosotros y no un pc, trataré de perfeccionarlo sacando las variables que no importaban tanto, y me quedaré sólo con b1, b4 y b6 y veremos si el modelo mejora
+
+```{r}
+mod2_string = "model{
+for(i in 1:length(y)){
+  y[i] ~ dbern(p[i])
+  logit(p[i]) = int + b[1]*gravity[i] + b[2]*cond[i] + b[3]*calc[i]
+  }
+
+  int ~ dnorm(0.0, 1.0/25.0)
+
+  for(j in 1:3){
+    b[j] ~ dnorm(0.0, 1.0/25.0)
+  }
+}"
+```
+
+Ahora que no quiero seleccionar características, ya no necesito la distribución de Laplace, le quiero dar un poco más de holgura y por eso la reemplazo por una Normal no informativa
+
+```{r}
+#podemos usar el mismo data_jags, y como va a tener datos extra va a tirar un warning pero va a funcionar, o bien, correr la siguiente línea:
+#data_jags <- list(y = dat$r, gravity = X[,"gravity"], cond = X[,"cond"], calc = X[,"calc"])
+
+mod2 <- jags.model(textConnection(mod2_string), data = data_jags, n.chains = 3)
+
+update(mod2, 1e3)
+
+mod2_sim = coda.samples(model = mod2, variable.names = params, n.iter = 5e3)
+
+mod2_csim = as.mcmc(do.call(rbind, mod2_sim))
+```
+
+###Diagnósticos de Convergencia
+```{r}
+plot(mod2_sim)
+gelman.diag(mod2_sim)
+autocorr.diag(mod2_sim)
+effectiveSize(mod2_sim)
+
+dic2 <- dic.samples(mod2, n.iter = 1e3)
+```
+- Todas las variables tienen un buen mixing. A pesar de estar centradas en 0 los beta no están centradas en cero en la simulación. Son significativos
+- Valores de Gelman cercanos 1 por lo que no hay evidencia de que no hayan convergido
+- Eficiencia: hay menos memoria que en el anterior
+- Tamaño efectivo: los tamaños efectivos son algo mayores
+
+###Comparación de modelos
+
+¿Con qué modelo nos quedamos? Con el que tenga el DIC más bajo (devianza penalizada):
+
+```{r}
+dic1;dic2
+```
+
+En base a este criterio, con el primer modelo. A pesar de ello, hay que tener cuidado: El DIC no se debe tomar tan al pie de la letra cuando comparo modelos con distintas a priori. Nos quedamos con el 2do modelo por los argumentos dados antes y porque la diferencia en el DIC es poca.
+
+### Resultados
+
+```{r}
+summary(mod2_sim)
+```
+
+```{r}
+par(mfrow = c(3,2))
+densplot(mod2_csim[, 1:3], xlim = c(-3, 3))
+```
+
+Podría ahora plotear los coeficientes a posteriori de a pares; la correlación entre los coeficientes da cuenta de la correlación entre las variables asociadas a ese coeficiente. 

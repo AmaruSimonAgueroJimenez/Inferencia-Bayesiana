@@ -1,0 +1,134 @@
+---
+title: "Regresión Lineal Bayesiana - Ejemplo A"
+output: 
+---
+
+```{r}
+library(rjags)
+library(coda)
+```
+
+# Simulación de los datos ####
+```{r}
+# Tamaño de la muestra
+n <- 10
+beta_0 <- 100
+beta_1 <- 20
+sigma2 <- 25
+
+# Variable predictora: x
+set.seed(1984); x <- rnorm(n = n)
+
+# Variable respuesta: y
+set.seed(1313); y <- rnorm(n = n,
+                           mean = beta_0 + beta_1*x,
+                           sd = sqrt(sigma2))
+
+# Crear una tabla de datos y graficar
+print(datos <- data.frame(y, x))
+plot(y ~ x, data = datos)
+```
+
+# Análisis frecuentista ####
+```{r}
+# Ajuste del modelo lineal
+ajuste <- lm(y ~ x, data = datos)
+
+# Tabla de ANOVA
+anova(ajuste)
+
+# Resumen del ajuste
+summary(ajuste)
+```
+
+# ESPECIFICACIÓN DEL MODELO EN JAGS ####
+```{r}
+modelo_texto <- "model{
+
+  # Modelo probabilístico
+  for (i in 1:length(y)) {
+    y[i] ~ dnorm(mu[i], tau)
+    mu[i] = b0 + b1*x[i]
+  }
+
+  # Distribuciones a priori 'poco informativas'
+    b0 ~ dnorm(0.0, 1.0/1.0e6)
+    b1 ~ dnorm(0.0, 1.0/1.0e4)
+    tau ~ dgamma(1.0/1.0e3, 1.0/1.0e3)
+
+  # Funciones parametrales de interés
+    sigma2 <- 1/tau
+}"
+```
+
+# EJECUCIÓN DEL MÉTODO MCMC ####
+
+## Preparativos
+```{r}
+datos_jags <- as.list(datos)
+parametros <- c("b0", "b1", "sigma2")
+modelo_jags <- jags.model(
+  file = textConnection(modelo_texto),
+  data = datos_jags,
+  n.chains = 3)
+```
+
+## Burn-in
+```{r}
+update(object = modelo_jags, n.iter = 1e3)
+```
+## Generar las cadenas
+
+```{r}
+modelo_coda <- coda.samples(
+  model = modelo_jags,
+  variable.names = parametros,
+  n.iter = 5e3)
+
+modelo_mcmc <- as.mcmc(do.call(rbind, modelo_coda))
+```
+
+# Evaluar el modelo
+
+```{r}
+plot(modelo_mcmc)
+```
+
+```{r}
+gelman.diag(modelo_coda)
+```
+No hay evidencia de que el modelo no converja
+```{r}
+autocorr(modelo_coda)
+effectiveSize(modelo_coda)
+```
+## Resultados y residuos
+```{r}
+summary(modelo_coda)
+intervalo.hpd <- HPDinterval(as.mcmc(modelo_mcmc), prob = .95)
+intervalo.hpd
+```
+
+```{r}
+lmod0 <- lm(y ~ x, data = datos)
+
+plot(predict(lmod0), resid(lmod0))
+qqnorm(resid(lmod0)); qqline(resid(lmod0))
+plot(resid(lmod0))
+```
+
+Cuando quiero hacer los residuos bayesianos, uso los estimadores de Bayes
+```{r}
+X <- cbind(rep(1, length(datos_jags$x)), datos_jags$x)
+pm_params1 <- colMeans(modelo_mcmc)
+yhat1 <- drop(X %*% pm_params1[1:2]) #esta es la predicción %*% multiplica matrices
+resid1 <- datos_jags$y - yhat1 #residuos: datos - predicción
+
+```
+
+```{r}
+plot(resid1)
+plot(yhat1, resid1)
+qqnorm(resid1); qqline(resid1)
+```
+

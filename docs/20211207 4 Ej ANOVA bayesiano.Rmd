@@ -1,0 +1,102 @@
+---
+title: "ANOVA desde una perspectiva Bayesiana"
+output: 
+---
+
+```{r}
+data("PlantGrowth")
+str(PlantGrowth)
+```
+#Visualización
+```{r}
+boxplot(weight ~ group, data=PlantGrowth)
+```
+#ANOVA
+
+##Anova frecuentista
+```{r}
+lmod <- lm(weight ~ group, data=PlantGrowth)
+summary(lmod)
+mean(PlantGrowth$weight[PlantGrowth$group=="ctrl"])
+mean(PlantGrowth$weight[PlantGrowth$group=="trt1"])
+mean(PlantGrowth$weight[PlantGrowth$group=="crt2"])
+
+anova(lmod)
+
+plot(lmod)
+```
+
+##Anova bayesiano
+```{r}
+library(rjags)
+mod_string = "model { 
+  for(i in 1:length(y)){
+    y[i] ~ dnorm(mu[grp[i]], prec)
+  }
+  for(j in 1:3){
+    mu[j] ~ dnorm(0.0, 1.0/1.0e6) #una varianza muy grande genera una normal no informativa
+  }
+  prec ~ dgamma(2.5,2.5) #la gamma es otra forma de escribir la chi cuadrada
+  sig = sqrt(1.0/prec)
+}"
+```
+```{r}
+set.seed(82)
+str(PlantGrowth)#se puede eliminar
+data_jags <- list(y=PlantGrowth$weight, grp=as.numeric(PlantGrowth$group)) #transformamos factores en números porque jags no usa factores, ocupar vectores en ves de data frame
+params <- c("mu","sig") #no se especifica la presicion, se puede pedir varianza y presicion pero nos intereza sigma
+inits <- function(){
+  inits = list("mu" = rnorm(3, 0.0, 100.0), "prec" = rgamma(1, 1.0, 1.0))#inicio del modelo
+}
+```
+
+```{r}
+mod <- jags.model(textConnection(mod_string), data=data_jags, inits = inits(), n.chains = 3)
+update(mod, 1e3)#modelos inicial burning de datos los primero 1000
+mod_sim <- coda.samples(model = mod, variable.names = params, n.iter = 5e3)
+library(coda)#modelo ya simulado propiamente tal
+mod_csim <- as.mcmc(do.call(rbind, mod_sim))
+```
+
+###Convergencia
+```{r}
+plot(mod_sim)
+```
+El mixing se ve bien
+Recorre bien el espacio de parámetros, converge rápido
+Pese a que los datos los centré en 0, acá lo no están.
+```{r}
+gelman.diag(mod_sim)
+```
+No hay evidencia de que el modelo no haya convergido (todo da 1)
+```{r}
+autocorr.diag(mod_sim)
+effectiveSize(mod_sim)
+```
+Tengo un tamaño efectivo muy grande, eso es bueno se generaban cadenas de largo 15000
+```{r}
+effectiveSize(mod_sim)
+```
+
+###Residuos
+```{r}
+pm_params <- colMeans(mod_csim)
+coefficients(lmod)
+yhat <- pm_params[1:3][data_jags$grp]
+head(yhat)
+resid <- data_jags$y - yhat
+plot(resid) #con este gráfico veo visualmente la independencia, en este caso no se rompe
+plot(yhat, resid) #varianza del residuo asociada a las medias de los distintos grupos, no hay evidencias contra la homocedasticidad
+```
+
+###Resultados
+```{r}
+summary(mod_sim)
+HPDinterval(mod_csim) #mejor intervalo que el de colas iguales, más estrecho
+```
+
+###Efectos
+```{r}
+mean(mod_csim[,3] > mod_csim[,1])
+```
+
