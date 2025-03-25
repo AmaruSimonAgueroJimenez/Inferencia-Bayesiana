@@ -9,6 +9,24 @@ mu ~ n(mu0, sig0^2)
 sig^2 IG(nu0, beta0)
 
 ```{r}
+paquetes_necesarios <- c("mcmc", "rjags")
+
+# Para cada paquete en la lista:
+for (p in paquetes_necesarios) {
+  # Verificar si está instalado
+  if (!require(p, character.only = TRUE, quietly = TRUE)) {
+    # Si no está instalado, se instala
+    install.packages(p)
+    # Luego se carga
+    library(p, character.only = TRUE)
+  } else {
+    # Si ya está instalado, simplemente se carga
+    library(p, character.only = TRUE)
+  }
+}
+```
+
+```{r}
 update_mu = function(n, ybar, sig2, mu_0, sig2_0){
 	sig2_1 = 1.0 / (n/sig2 + 1/sig2_0)
 	mu_1 = sig2_1 * (n*ybar/sig2 + mu_0/sig2_0)
