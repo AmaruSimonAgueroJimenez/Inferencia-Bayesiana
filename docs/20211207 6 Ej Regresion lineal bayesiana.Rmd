@@ -57,6 +57,8 @@ library(rjags)
 set.seed(123)
 ```
 
+
+
 ```{r}
 mod1_string <- "model{
 
@@ -74,6 +76,28 @@ mod1_string <- "model{
   sig = sqrt(sig2)
 
 }"
+
+# Este bucle itera sobre todas las observaciones (n)
+# Cada y[i] sigue una distribución normal con media mu[i] y precisión prec
+# La media mu[i] se modela como una función lineal del logaritmo del ingreso
+# b[1] es el intercepto y b[2] es la pendiente
+# 
+# for(j in 1:2){
+#   b[j] ~ dnorm(0.0, 1.0/1.0e6)
+# }
+# Define priors no informativos para los coeficientes b[1] y b[2]
+# Usa una distribución normal con media 0 y varianza muy grande (1e6)
+# Este es un prior débil que permite que los datos dominen la inferencia
+# 
+# prec ~ dgamma(2.5, 25.0)
+# sig2 = 1.0 /prec
+# sig = sqrt(sig2)
+# 
+# La precisión (prec) sigue una distribución gamma con parámetros α=2.5 y β=25.0
+# sig2 es la varianza (inversa de la precisión)
+# sig es la desviación estándar
+# Este prior para la precisión es algo informativo pero aún flexible
+
 ```
 
 ```{r}
@@ -82,9 +106,20 @@ data1_jags <- list(y = dat$loginfant,
                    log_income = dat$logincome)
 
 params1 <- c("b", "sig")
+
+# Crea una lista con los datos necesarios para el modelo JAGS
+# y es la variable dependiente (logaritmo de mortalidad infantil)
+# n es el número de observaciones
+# log_income es la variable independiente (logaritmo del ingreso)
+# params1 define los parámetros que queremos monitorear (coeficientes b y desviación estándar sig)
 ```
 
 ```{r}
+# Define una función que genera valores iniciales aleatorios para el modelo
+# Para b: genera 2 valores de una distribución normal(0, 100)
+# Para prec: genera 1 valor de una distribución gamma(1, 1)
+# Estos valores iniciales ayudan a iniciar las cadenas MCMC
+
 inits1 <- function(){
   inits = list("b" = rnorm(2, 0.0, 100.0), #simulo 2 normales, por b1 y b2
                "prec" = rgamma(1, 1.0, 1.0)) 
@@ -92,15 +127,25 @@ inits1 <- function(){
 ```
 
 ```{r}
+# Crea el modelo JAGS usando la especificación anterior
+# Usa 3 cadenas MCMC independientes
+# update(mod1, 1000) ejecuta 1000 iteraciones de "burn-in" (calentamiento)
+# Estas iteraciones iniciales se descartan para eliminar la influencia de los valores iniciales
+
 mod1 <- jags.model(textConnection(mod1_string), 
                    data = data1_jags,
                    inits = inits1,
                    n.chains = 3) #la idea es usar de 3 cadenas para arriba
 
-update(mod1, 1000)
+update(mod1, 1)
 ```
 
 ```{r}
+# Ejecuta la simulación MCMC para obtener muestras de la distribución posterior
+# Realiza 5000 iteraciones para cada cadena
+# Monitorea los parámetros especificados en params1 (b y sig)
+# do.call(rbind, mod1_sim) combina las muestras de todas las cadenas en una única matriz
+
 mod1_sim <- coda.samples(model = mod1,
                          variable.names = params1,
                          n.iter = 5e3)
@@ -118,11 +163,45 @@ plot(mod1_sim)
 las cadenas se ven con muy buen mixing, recorren bien el espacio de parámetros
 las distribuciones originalmente eran centradas en 0 y ahora están desplazadas a otros valores
 ```{r}
+
+# Esta función pertenece al paquete coda y calcula el diagnóstico de Gelman-Rubin para evaluar si las cadenas MCMC han convergido.
+# Compara la variabilidad entre cadenas (varianza entre cadenas) con la variabilidad dentro de cada cadena (varianza dentro de cadenas).
+# Devuelve un valor R
+# R para cada parámetro monitoreado.
+# R mide la relación entre la varianza total (entre y dentro de cadenas) y la varianza dentro de las cadenas.
+# Valores R cercanos a 1 sugieren que las cadenas han convergido.
+# R > 1.1 sugieren que las cadenas no han convergido completamente y que se necesitan más iteraciones.
 gelman.diag(mod1_sim)
 ```
 No hay evidencia de que el modelo no converja
 ```{r}
+# Devuelve una tabla o matriz con los valores de autocorrelación para cada parámetro monitoreado, en diferentes retardos (lags).
+# Los retardos (lags) representan la distancia entre las muestras que se están comparando. Por ejemplo:
+# Lag 0: Autocorrelación de una muestra consigo misma (siempre es 1).
+# Lag 1: Autocorrelación entre una muestra y la siguiente.
+# Lag 2: Autocorrelación entre una muestra y la segunda siguiente, y así sucesivamente.
+# Si los valores de autocorrelación disminuyen rápidamente hacia 0, las muestras son menos dependientes entre sí, lo cual es deseable.
+# Si los valores de autocorrelación permanecen altos incluso en lags grandes, significa que las cadenas tienen alta dependencia entre muestras consecutivas. Esto puede reducir la eficiencia del muestreo.
 autocorr(mod1_sim)
+```
+
+```{r}
+# Calcula el tamaño efectivo de muestra (Effective Sample Size, ESS) para cada parámetro monitoreado.
+# El ESS estima cuántas muestras independientes equivalentes hay en las cadenas MCMC, teniendo en cuenta la autocorrelación.
+# Aunque generes muchas iteraciones, si las cadenas tienen alta autocorrelación, el ESS será mucho menor que el número total de muestras.
+# Salida
+# Devuelve un valor para cada parámetro, que representa el tamaño efectivo de muestra.
+# Ejemplo de salida
+# Si mod1_sim contiene las cadenas para los parámetros b[1], b[2] y sig, la salida podría ser algo como esto:
+# 
+# b[1]   1500
+# b[2]   1200
+# sig     800
+# Interpretación
+# Valores altos: Un ESS alto (cercano al número total de iteraciones) indica que las muestras son casi independientes y el muestreo es eficiente.
+# Valores bajos: Un ESS bajo indica que las cadenas tienen alta autocorrelación, lo que reduce la cantidad de información útil en las muestras.
+# Regla general: Un ESS menor a 100 puede ser problemático, ya que indica que las cadenas no están proporcionando suficientes muestras independientes.
+
 effectiveSize(mod1_sim)
 ```
 tengo mucho menos información que lo que simulé
